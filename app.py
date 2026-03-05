@@ -5,36 +5,43 @@ import io
 import re
 from concurrent.futures import ThreadPoolExecutor
 
-# --- CONFIGURACIÓN DE SEGURIDAD ---
+# --- CONFIGURACIÓN DE SEGURIDAD (Secrets) ---
 def check_password():
-    """Devuelve True si el usuario introdujo la contraseña correcta."""
     def password_entered():
         if st.session_state["password"] == st.secrets["password"]:
             st.session_state["password_correct"] = True
-            del st.session_state["password"]  # Eliminar contraseña de la memoria
+            del st.session_state["password"]
         else:
             st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state:
-        # Pantalla de Login inicial
         st.title("🔐 Acceso Restringido - Price Intel")
         st.text_input("Introduce la contraseña de equipo", type="password", on_change=password_entered, key="password")
         return False
     elif not st.session_state["password_correct"]:
-        # Contraseña incorrecta
         st.title("🔐 Acceso Restringido - Price Intel")
-        st.text_input("Contraseña incorrecta. Inténtalo de nuevo", type="password", on_change=password_entered, key="password")
+        st.text_input("Contraseña incorrecta", type="password", on_change=password_entered, key="password")
         st.error("😕 Acceso denegado")
         return False
-    else:
-        # Contraseña correcta
-        return True
+    return True
 
 if check_password():
-    # --- TODO TU CÓDIGO DE LA APLICACIÓN VA AQUÍ ---
-    st.set_page_config(page_title="Price Intel Pro v4.2", layout="wide")
+    st.set_page_config(page_title="Price Intel Pro v4.3", layout="wide")
     
-    # Identidad Anti-Bot
+    # CSS para Tarjetas Compactas (Mitad de ancho, 4 por fila)
+    st.markdown("""
+        <style>
+        .card {
+            background: white; padding: 12px; border-radius: 10px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05); border-left: 5px solid #ff6000;
+            margin-bottom: 10px; height: 160px;
+        }
+        .price { font-size: 22px; font-weight: bold; color: #1d1d1b; }
+        .pvp { color: #ff6000; font-size: 18px; font-weight: bold; }
+        .vendor { font-size: 14px; color: #666; text-transform: uppercase; letter-spacing: 1px; }
+        </style>
+        """, unsafe_allow_html=True)
+
     HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"}
 
     @st.cache_data(ttl=3600)
@@ -63,28 +70,59 @@ if check_password():
         return pd.concat(results, ignore_index=True)
 
     st.title("🧡 Panel de Inteligencia Comercial")
-    margen = st.sidebar.slider("Margen de beneficio deseado (%)", 0, 50, 15)
+    margen = st.sidebar.slider("Margen de beneficio (%)", 0, 50, 15)
     
-    if st.sidebar.button("🔄 Forzar actualización de datos"):
+    if st.sidebar.button("🔄 Actualizar Mayoristas"):
         st.cache_data.clear()
+        st.rerun()
 
     db = cargar_datos_seguro()
-    busqueda = st.text_input("🔍 Introduce el Part Number (PN):").upper()
 
-    if busqueda:
-        res = db[db['PN'] == busqueda].sort_values('COSTO')
-        if not res.empty:
-            cols = st.columns(3)
-            for i, (_, r) in enumerate(res.iterrows()):
+    # 1. BUSCADOR MULTI-REFERENCIA
+    entrada = st.text_input("🔍 Busca múltiples PN separados por |", placeholder="Ej: PN1 | PN2 | PN3").upper()
+
+    if entrada:
+        pns_buscados = [x.strip() for x in entrada.split('|') if x.strip()]
+        res_total = db[db['PN'].isin(pns_buscados)]
+
+        if not res_total.empty:
+            # 2. TABLA INTERACTIVA (Tu recuadro verde)
+            st.subheader("📋 Resumen de Referencias Encontradas")
+            # Agrupamos para mostrar la mejor opción de cada PN en la tabla
+            res_resumen = res_total.sort_values('COSTO').groupby('PN').head(1)[['PN', 'PROVEEDOR', 'COSTO', 'STOCK']]
+            
+            # Selector de fila (interacción del recuadro verde)
+            seleccion = st.dataframe(
+                res_resumen, 
+                use_container_width=True, 
+                hide_index=True, 
+                on_select="rerun", 
+                selection_mode="single-row"
+            )
+
+            # Lógica de selección: Primera línea por defecto o la que pinche el usuario
+            pn_a_mostrar = pns_buscados[0] # Por defecto el primero
+            if seleccion and seleccion.selection.rows:
+                index_seleccionado = seleccion.selection.rows[0]
+                pn_a_mostrar = res_resumen.iloc[index_seleccionado]['PN']
+
+            # 3. TARJETAS DETALLADAS (Mitad de ancho, 4 por fila)
+            st.divider()
+            st.subheader(f"🏷️ Ofertas para: {pn_a_mostrar}")
+            detalles = res_total[res_total['PN'] == pn_a_mostrar].sort_values('COSTO')
+            
+            # Generar Grid de 4 columnas
+            cols = st.columns(4)
+            for i, (_, r) in enumerate(detalles.iterrows()):
                 pvp = r['COSTO'] * (1 + (margen/100))
-                with cols[i % 3]:
+                with cols[i % 4]:
                     st.markdown(f"""
-                    <div style="border: 1px solid #ddd; padding: 15px; border-radius: 10px; background: white; margin-bottom: 10px;">
-                        <h3>{r['PROVEEDOR']}</h3>
-                        <p>Costo: <b>{r['COSTO']:.2f}€</b></p>
-                        <p style="color: #ff6000; font-size: 20px;">PVP Sugerido: <b>{pvp:.2f}€</b></p>
-                        <p>Stock: {r['STOCK']}</p>
+                    <div class="card">
+                        <div class="vendor">{r['PROVEEDOR']}</div>
+                        <div class="price">{r['COSTO']:.2f}€ <small>(Costo)</small></div>
+                        <div class="pvp">{pvp:.2f}€ <small>(PVP)</small></div>
+                        <p style="margin-top:10px;">📦 Stock: <b>{r['STOCK']}</b></p>
                     </div>
                     """, unsafe_allow_html=True)
         else:
-            st.error("Producto no encontrado.")
+            st.warning("No se encontraron resultados para esas referencias.")
