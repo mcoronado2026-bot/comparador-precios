@@ -30,9 +30,9 @@ def cargar_inventario_completo():
         "INFORTISA": {"url": "https://apiv2.infortisa.com/api/Tarifa/GetFileV5?user=4057C87D-91D1-42C9-A95F-D1FF8E30720E", "sep": ";", "cols": [0, 10, 11, 1], "enc": "latin-1"},
         "GLOBOMATIK": {"url": "https://multimedia.globomatik.net/csv/import.php?username=31843&password=04665238&formato=csv&filter=PRESTAIMPORT&type=prestashop2&mode=all", "sep": ";", "cols": [1, 13, 12, 2], "enc": "utf-8"},
         "DESYMAN": {"url": "https://desyman.com/module/ma_desyman/download_rate_customer?token=68c40ea1aa4df9db6e2614a6b79bcb48&format=CSVreducido", "sep": ";", "cols": [2, 7, 3, 1], "enc": "utf-8"},
-        "SYK": {"url": "https://www.syk.es/tarifas/completa.csv", "sep": ";", "cols": [0, 4, 5, 1], "enc": "utf-8"}, # URL estimada
-        "JARLTECH": {"url": "https://www.jarltech.com/p_get_pricelist.php?user=TU_USER&pass=TU_PASS", "sep": ",", "cols": [0, 5, 8, 1], "enc": "utf-8"},
-        "KOSATEK": {"url": "https://api.kosatek.de/v1/products/csv?apiKey=TU_KEY", "sep": ";", "cols": [1, 10, 15, 2], "enc": "utf-8"}
+        "SYK": {"url": "https://www.siewert-kau.com/en/api/prices/c2c27194842155240822/full.csv", "sep": ";", "cols": [0, 4, 5, 1], "enc": "utf-8"}, # URL estimada
+        "JARLTECH": {"url": "https://www.jarltech.com/en/price-list/public/6e71ab92e54c52048ce923615c89a2f9/560ae19c129df2eff97bedb97ed5a5a6", "sep": ",", "cols": [0, 5, 8, 1], "enc": "utf-8"},
+        "KOSATEK": {"url": "https://data.kosatec.de/25795/883601faba9d8f15e7bbe644549f5188/preisliste.csv", "sep": ";", "cols": [1, 10, 15, 2], "enc": "utf-8"}
     }
 
     def fetch(nombre, cfg):
@@ -115,3 +115,4 @@ if search:
             st.rerun()
     else:
         st.warning("No se encontraron coincidencias. Revisa si las URLs de SYK/KOSATEK/JARLTECH son correctas.")
+
