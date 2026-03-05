@@ -66,4 +66,5 @@ if busqueda:
                 </div>
                 """, unsafe_allow_html=True)
     else:
+
         st.error("Producto no encontrado.")
