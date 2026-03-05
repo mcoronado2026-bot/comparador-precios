@@ -5,9 +5,8 @@ import io
 from concurrent.futures import ThreadPoolExecutor
 
 # --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="AI Inventory Console v5.0 - Full Vendor", layout="wide")
+st.set_page_config(page_title="AI Inventory Console v5.1 - Fix", layout="wide")
 
-# CSS Profesional para Tarjetas
 st.markdown("""
     <style>
     .card {
@@ -38,24 +37,23 @@ def check_password():
     return True
 
 if check_password():
-    # --- MOTOR DE DATOS (7 PROVEEDORES) ---
+    # --- MOTOR DE DATOS ---
     @st.cache_data(ttl=3600, show_spinner="Sincronizando con Mayoristas...")
     def cargar_datos_completos():
-        # Definición técnica de columnas y formatos por proveedor
         PROVEEDORES = {
             "DEPAU": {"url": "https://www.depau.es/webservices/tarifa_completa/84acda65-a18c-4dc7-87d8-afc8f54616ba/csv", "sep": "\t", "cols": [9, 2, 8, 3], "enc": "utf-8"},
             "INFORTISA": {"url": "https://apiv2.infortisa.com/api/Tarifa/GetFileV5?user=4057C87D-91D1-42C9-A95F-D1FF8E30720E", "sep": ";", "cols": [0, 10, 11, 1], "enc": "latin-1"},
             "GLOBOMATIK": {"url": "https://multimedia.globomatik.net/csv/import.php?username=31843&password=04665238&formato=csv&filter=PRESTAIMPORT&type=prestashop2&mode=all", "sep": ";", "cols": [1, 13, 12, 2], "enc": "utf-8"},
             "DESYMAN": {"url": "https://desyman.com/module/ma_desyman/download_rate_customer?token=68c40ea1aa4df9db6e2614a6b79bcb48&format=CSVreducido", "sep": ";", "cols": [2, 7, 3, 1], "enc": "utf-8"},
-            "SYK": {"url": "TU_URL_DE_SYK", "sep": ";", "cols": [0, 1, 2, 3], "enc": "utf-8"}, # Ajustar índices según CSV real
-            "JARLTECH": {"url": "TU_URL_DE_JARLTECH", "sep": ";", "cols": [0, 1, 2, 3], "enc": "utf-8"},
-            "KOSATEK": {"url": "TU_URL_DE_KOSATEK", "sep": ";", "cols": [0, 1, 2, 3], "enc": "utf-8"}
+            "SYK": {"url": "URL_AQUI", "sep": ";", "cols": [0, 1, 2, 3], "enc": "utf-8"},
+            "JARLTECH": {"url": "URL_AQUI", "sep": ";", "cols": [0, 1, 2, 3], "enc": "utf-8"},
+            "KOSATEK": {"url": "URL_AQUI", "sep": ";", "cols": [0, 1, 2, 3], "enc": "utf-8"}
         }
 
         def descargar(nombre, info):
             try:
-                if "TU_URL" in info["url"]: return pd.DataFrame() # Ignorar si no hay URL real
-                r = requests.get(info["url"], timeout=12)
+                if "URL_AQUI" in info["url"]: return pd.DataFrame()
+                r = requests.get(info["url"], timeout=10)
                 df = pd.read_csv(io.StringIO(r.content.decode(info["enc"], errors='replace')), 
                                  sep=info["sep"], on_bad_lines='skip', engine='c')
                 t = pd.DataFrame()
@@ -67,7 +65,6 @@ if check_password():
                 return t.dropna(subset=['COSTO'])
             except: return pd.DataFrame()
 
-        # Descarga masiva paralela (max_workers=7)
         with ThreadPoolExecutor(max_workers=7) as pool:
             results = list(pool.map(lambda p: descargar(*p), PROVEEDORES.items()))
         return pd.concat(results, ignore_index=True)
@@ -75,9 +72,9 @@ if check_password():
     db = cargar_datos_completos()
 
     # --- UI PRINCIPAL ---
-    st.title("🤖 AI Inventory Console v5.0")
+    st.title("🤖 AI Inventory Console v5.1")
     
-    entrada = st.text_input("🔍 Introduce PN(s) separados por |", key="main_search").upper()
+    entrada = st.text_input("🔍 Part Number(s)", key="main_search").upper()
 
     if entrada:
         pns = [x.strip() for x in entrada.split('|') if x.strip()]
@@ -88,18 +85,20 @@ if check_password():
                 st.session_state["pn_activo"] = pns[0]
             
             pn_sel = st.session_state["pn_activo"]
+            datos_actuales = res_total[res_total['PN'] == pn_sel].sort_values('COSTO')
+
+            # --- SOLUCIÓN AL ERROR: Slider fuera de la sidebar si usamos fragmentos ---
+            st.subheader(f"🏷️ Referencia: {pn_sel}")
+            st.caption(f"📝 {datos_actuales['DESC'].iloc[0] if not datos_actuales.empty else ''}")
             
-            # FRAGMENTO: Mejora la fluidez al cambiar el margen
+            # Slider de margen (Global para que no rompa el fragmento)
+            margen = st.slider("Margen de beneficio (%)", 0, 50, 15)
+
             @st.fragment
-            def render_content(datos_filtrados):
-                st.subheader(f"🏷️ Referencia: {pn_sel}")
-                st.caption(f"📝 {datos_filtrados['DESC'].iloc[0] if not datos_filtrados.empty else ''}")
-                
-                margen = st.sidebar.slider("Margen de beneficio (%)", 0, 50, 15)
-                
+            def render_cards(df, m):
                 grid = st.columns(4)
-                for i, (_, r) in enumerate(datos_filtrados.iterrows()):
-                    pvp = r['COSTO'] * (1+ (margen/100))
+                for i, (_, r) in enumerate(df.iterrows()):
+                    pvp = r['COSTO'] * (1 + (m/100))
                     with grid[i % 4]:
                         st.markdown(f'''
                         <div class="card">
@@ -110,14 +109,11 @@ if check_password():
                         </div>
                         ''', unsafe_allow_html=True)
 
-            datos_actuales = res_total[res_total['PN'] == pn_sel].sort_values('COSTO')
-            render_content(datos_actuales)
+            render_cards(datos_actuales, margen)
 
             # TABLA NAVEGABLE
             st.divider()
-            st.subheader("📋 Resultados de la búsqueda")
             res_resumen = res_total.sort_values('COSTO').groupby('PN').head(1)[['PN', 'DESC', 'COSTO', 'PROVEEDOR']]
-            
             sel = st.dataframe(res_resumen, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row")
 
             if sel and sel.selection.rows:
