@@ -6,11 +6,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 # --- SISTEMA DE SEGURIDAD (LOGIN) ---
 def check_password():
-    """Devuelve True si el usuario introdujo la contraseña correcta."""
     def password_entered():
         if st.session_state["password"] == st.secrets["password"]:
             st.session_state["password_correct"] = True
-            del st.session_state["password"]  # Eliminar de memoria por seguridad
+            del st.session_state["password"]
         else:
             st.session_state["password_correct"] = False
 
@@ -30,7 +29,6 @@ if check_password():
     # --- CONFIGURACIÓN DE PÁGINA ---
     st.set_page_config(page_title="AI Inventory Console v4.5", layout="wide")
     
-    # CSS para diseño profesional, tarjetas y el nuevo recuadro de ITscope
     st.markdown("""
         <style>
         .card {
@@ -38,40 +36,31 @@ if check_password():
             border-top: 4px solid #ff6000; box-shadow: 0 4px 6px rgba(0,0,0,0.07);
             margin-bottom: 20px; min-height: 190px; transition: 0.3s;
         }
-        .card:hover { transform: translateY(-5px); }
         .vendor-name { font-size: 11px; color: #888; font-weight: bold; text-transform: uppercase; }
         .price-val { font-size: 26px; font-weight: bold; color: #1d1d1b; margin: 5px 0; }
         .pvp-val { color: #ff6000; font-size: 19px; font-weight: bold; }
         .savings-tag { background: #e8f5e9; color: #2e7d32; padding: 4px 8px; border-radius: 5px; font-size: 12px; font-weight: bold; }
-        .itscope-box {
-            background-color: #f8f9fa; padding: 15px; border-radius: 10px;
-            border: 1px solid #eaeaea; box-shadow: inset 0 2px 4px rgba(0,0,0,0.02);
-        }
+        .itscope-box { background-color: #f8f9fa; padding: 10px; border-radius: 10px; border: 1px solid #eaeaea; }
         </style>
         """, unsafe_allow_html=True)
 
-    # --- FUNCIÓN ESPECÍFICA ITSCOPE ---
+    # --- MOTOR DE DATOS ITSCOPE ---
     def obtener_top5_itscope(pn):
         url_api = "https://api.itscope.com/2.0/t/86MIdkfqPjtK_SDiprcfaKp1l_hWeIgtka9oYRZLH3X95Vje82UP7nh1rcwaLTaUHXj2MELgGTBusiarXbby2Z5BJeJqHS-5ASq9CRl76fYlf9Dhu7K3dY5tZNp_fMZ7-iUmn4JhGS0D7mwHNH7eo7oEyeFA8tbBGyjwyYJxfSc"
         try:
-            # Petición a la API de ITscope
             r = requests.get(url_api, timeout=10)
-            df_it = pd.read_csv(io.StringIO(r.content.decode('utf-8')), sep=',', on_bad_lines='skip')
-            
-            # Limpieza de columnas para asegurar compatibilidad
+            df_it = pd.read_csv(io.StringIO(r.content.decode('utf-8')), on_bad_lines='skip')
             df_it.columns = [c.upper().strip() for c in df_it.columns]
+            # Búsqueda flexible de columnas
+            col_pn = 'PN' if 'PN' in df_it.columns else df_it.columns[0]
+            col_precio = 'PRECIO' if 'PRECIO' in df_it.columns else (df_it.columns[1] if len(df_it.columns)>1 else df_it.columns[0])
             
-            # Buscamos por la columna de referencia (ajustar si ITscope usa otro nombre de columna)
-            # Suponemos que el CSV tiene 'PN' o 'MANUFACTURER_SKU'
-            col_ref = 'PN' if 'PN' in df_it.columns else df_it.columns[0]
-            col_precio = 'PRECIO' if 'PRECIO' in df_it.columns else df_it.columns[1]
-            
-            top5 = df_it[df_it[col_ref].astype(str).str.contains(pn, na=False)].sort_values(by=col_precio).head(5)
-            return top5
+            res = df_it[df_it[col_pn].astype(str).str.contains(pn, na=False, case=False)]
+            return res.sort_values(by=col_precio).head(5)
         except:
-            return None
+            return pd.DataFrame()
 
-    # --- MOTOR DE DATOS ORIGINAL ---
+    # --- MOTOR DE DATOS PROVEEDORES ---
     @st.cache_data(ttl=3600)
     def cargar_datos_seguro():
         PROVEEDORES = {
@@ -83,8 +72,7 @@ if check_password():
         
         def descargar(nombre, info):
             try:
-                headers = {"User-Agent": "Mozilla/5.0"}
-                r = requests.get(info["url"], headers=headers, timeout=15)
+                r = requests.get(info["url"], headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
                 df = pd.read_csv(io.StringIO(r.content.decode(info["enc"], errors='replace')), sep=info["sep"], on_bad_lines='skip', engine='python')
                 t = pd.DataFrame()
                 t['PN'] = df.iloc[:, info["cols"][0]].astype(str).str.upper().str.strip()
@@ -102,16 +90,15 @@ if check_password():
 
     db = cargar_datos_seguro()
 
-    # --- INTERFAZ DE USUARIO ---
-    col_head, col_itscope = st.columns([2, 1])
+    # --- INTERFAZ ---
+    c_titulo, c_itscope = st.columns([2, 1])
 
-    with col_head:
-        st.title("🤖 AI Inventory Console v4.5") # Cambio de icono y título
-        entrada = st.text_input("🔍 Pega tus PN separados por |", placeholder="Ej: PN1 | PN2 | PN3").upper()
+    with c_titulo:
+        st.title("🤖 AI Inventory Console v4.5")
+        entrada = st.text_input("🔍 Pega tus PN separados por |", placeholder="Ej: PN1 | PN2").upper()
 
-    # Barra lateral
     margen = st.sidebar.slider("Margen de beneficio (%)", 0, 50, 15)
-    if st.sidebar.button("🔄 Forzar Recarga de Datos"):
+    if st.sidebar.button("🔄 Forzar Recarga"):
         st.cache_data.clear()
         st.rerun()
 
@@ -119,15 +106,13 @@ if check_password():
         pns_buscados = [x.strip() for x in entrada.split('|') if x.strip()]
         res_total = db[db['PN'].isin(pns_buscados)]
 
-        # --- RECUADRO ITSCOPE (TOP 5) ---
-        with col_itscope:
+        # --- VISTA ITSCOPE (Título arriba, Tabla debajo) ---
+        with c_itscope:
             st.markdown('<div class="itscope-box">', unsafe_allow_html=True)
-            st.subheader("📊 Market Top 5 (ITscope)")
-            # Usamos el primer PN de la lista para la consulta rápida
-            pn_para_itscope = pns_buscados[0]
-            top5_it = obtener_top5_itscope(pn_para_itscope)
-            if top5_it is not None and not top5_it.empty:
-                st.dataframe(top5_it, hide_index=True)
+            st.markdown("### 📊 Market Top 5 (ITscope)")
+            top5_data = obtener_top5_itscope(pns_buscados[0])
+            if not top5_data.empty:
+                st.dataframe(top5_data, hide_index=True, use_container_width=True)
             else:
                 st.caption("No hay datos externos para esta referencia.")
             st.markdown('</div>', unsafe_allow_html=True)
@@ -138,12 +123,43 @@ if check_password():
             if "pn_activo" not in st.session_state or st.session_state["pn_activo"] not in pns_buscados:
                 st.session_state["pn_activo"] = pns_buscados[0]
 
-            # --- ZONA DE TARJETAS ---
+            # --- TARJETAS ---
             pn_actual = st.session_state["pn_activo"]
             datos_pn = res_total[res_total['PN'] == pn_actual].sort_values('COSTO')
             
             if not datos_pn.empty:
-                desc_label = datos_
-   
+                st.subheader(f"🎯 Ofertas para: {pn_actual}")
+                st.caption(f"📝 {datos_pn['DESC'].iloc[0]}")
 
+                costo_min = datos_pn['COSTO'].min()
+                costo_max = datos_pn['COSTO'].max()
+                grid = st.columns(4)
+                for idx, (_, r) in enumerate(datos_pn.iterrows()):
+                    pvp = r['COSTO'] * (1 + (margen/100))
+                    with grid[idx % 4]:
+                        st.markdown(f"""
+                        <div class="card">
+                            <div class="vendor-name">{r['PROVEEDOR']}</div>
+                            <div class="price-val">{r['COSTO']:.2f}€</div>
+                            <div class="pvp-val">PVP: {pvp:.2f}€</div>
+                            <div style="margin:10px 0;">
+                                {'<span class="savings-tag">⭐ MEJOR PRECIO</span>' if r['COSTO'] == costo_min else f'<span style="color:gray; font-size:12px;">Dif: +{(r["COSTO"]-costo_min):.2f}€</span>'}
+                            </div>
+                            <p style="font-size:13px; margin:0;">📦 Stock: <b>{r['STOCK']}</b></p>
+                        </div>
+                        """, unsafe_allow_html=True)
 
+            # --- TABLA NAVEGACIÓN (FIX INDEX ERROR) ---
+            st.divider()
+            st.subheader("📋 Panel de Referencias")
+            seleccion = st.dataframe(res_resumen, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row", key="tabla_nav")
+
+            if seleccion and seleccion.selection.rows:
+                idx = seleccion.selection.rows[0]
+                if idx < len(res_resumen):
+                    nuevo_pn = res_resumen.iloc[idx]['PN']
+                    if nuevo_pn != st.session_state["pn_activo"]:
+                        st.session_state["pn_activo"] = nuevo_pn
+                        st.rerun()
+        else:
+            st.warning("No se encontraron resultados.")
