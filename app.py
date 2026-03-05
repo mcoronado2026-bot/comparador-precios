@@ -79,7 +79,7 @@ if check_password():
     db = cargar_datos_seguro()
 
     # --- INTERFAZ DE USUARIO ---
-    st.title("🧡 Console Price Intelligence v4.5")
+    st.title("🧡 Console Price v4.5")
     
     # Barra lateral
     margen = st.sidebar.slider("Margen de beneficio (%)", 0, 50, 15)
@@ -186,3 +186,4 @@ if check_password():
         else:
             st.warning("No se encontraron resultados para esas referencias.")
    
+
