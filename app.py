@@ -6,10 +6,11 @@ from concurrent.futures import ThreadPoolExecutor
 
 # --- SISTEMA DE SEGURIDAD (LOGIN) ---
 def check_password():
+    """Devuelve True si el usuario introdujo la contraseña correcta."""
     def password_entered():
         if st.session_state["password"] == st.secrets["password"]:
             st.session_state["password_correct"] = True
-            del st.session_state["password"]
+            del st.session_state["password"]  # Eliminar de memoria por seguridad
         else:
             st.session_state["password_correct"] = False
 
@@ -29,6 +30,7 @@ if check_password():
     # --- CONFIGURACIÓN DE PÁGINA ---
     st.set_page_config(page_title="AI Inventory Console v4.5", layout="wide")
     
+    # CSS para diseño profesional y tarjetas
     st.markdown("""
         <style>
         .card {
@@ -36,40 +38,15 @@ if check_password():
             border-top: 4px solid #ff6000; box-shadow: 0 4px 6px rgba(0,0,0,0.07);
             margin-bottom: 20px; min-height: 190px; transition: 0.3s;
         }
+        .card:hover { transform: translateY(-5px); }
         .vendor-name { font-size: 11px; color: #888; font-weight: bold; text-transform: uppercase; }
         .price-val { font-size: 26px; font-weight: bold; color: #1d1d1b; margin: 5px 0; }
         .pvp-val { color: #ff6000; font-size: 19px; font-weight: bold; }
         .savings-tag { background: #e8f5e9; color: #2e7d32; padding: 4px 8px; border-radius: 5px; font-size: 12px; font-weight: bold; }
-        .itscope-box { background-color: #f8f9fa; padding: 15px; border-radius: 10px; border: 1px solid #eaeaea; }
         </style>
         """, unsafe_allow_html=True)
 
-    # --- MOTOR DE DATOS ITSCOPE (CON MAPEADO DE STOCK) ---
-    def obtener_top5_itscope(pn):
-        url_api = "https://api.itscope.com/2.0/t/86MIdkfqPjtK_SDiprcfaKp1l_hWeIgtka9oYRZLH3X95Vje82UP7nh1rcwaLTaUHXj2MELgGTBusiarXbby2Z5BJeJqHS-5ASq9CRl76fYlf9Dhu7K3dY5tZNp_fMZ7-iUmn4JhGS0D7mwHNH7eo7oEyeFA8tbBGyjwyYJxfSc"
-        try:
-            r = requests.get(url_api, timeout=10)
-            df_it = pd.read_csv(io.StringIO(r.content.decode('utf-8')), on_bad_lines='skip')
-            df_it.columns = [c.upper().strip() for c in df_it.columns]
-            
-            # Identificación inteligente de columnas
-            col_pn = next((c for c in df_it.columns if 'PN' in c or 'SKU' in c or 'REF' in c), df_it.columns[0])
-            col_precio = next((c for c in df_it.columns if 'PRECIO' in c or 'PRICE' in c or 'COST' in c), df_it.columns[1])
-            col_stock = next((c for c in df_it.columns if 'STOCK' in c or 'AVAIL' in c or 'CANT' in c), None)
-            col_prov = next((c for c in df_it.columns if 'PROV' in c or 'SUPP' in c or 'NAME' in c), df_it.columns[2])
-
-            res = df_it[df_it[col_pn].astype(str).str.contains(pn, na=False, case=False)].copy()
-            
-            # Formatear salida
-            cols_mostrar = [col_prov, col_precio]
-            if col_stock:
-                cols_mostrar.append(col_stock)
-            
-            return res.sort_values(by=col_precio).head(5)[cols_mostrar]
-        except:
-            return pd.DataFrame()
-
-    # --- MOTOR DE DATOS PROVEEDORES ---
+    # --- MOTOR DE DATOS (PROVEEDORES LOCALES) ---
     @st.cache_data(ttl=3600)
     def cargar_datos_seguro():
         PROVEEDORES = {
@@ -81,7 +58,8 @@ if check_password():
         
         def descargar(nombre, info):
             try:
-                r = requests.get(info["url"], headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+                headers = {"User-Agent": "Mozilla/5.0"}
+                r = requests.get(info["url"], headers=headers, timeout=15)
                 df = pd.read_csv(io.StringIO(r.content.decode(info["enc"], errors='replace')), sep=info["sep"], on_bad_lines='skip', engine='python')
                 t = pd.DataFrame()
                 t['PN'] = df.iloc[:, info["cols"][0]].astype(str).str.upper().str.strip()
@@ -99,40 +77,31 @@ if check_password():
 
     db = cargar_datos_seguro()
 
-    # --- INTERFAZ ---
-    c_titulo, c_itscope = st.columns([2, 1])
-
-    with c_titulo:
-        st.title("🤖 AI Inventory Console v4.5")
-        entrada = st.text_input("🔍 Pega tus PN separados por |", placeholder="Ej: PN1 | PN2").upper()
-
+    # --- INTERFAZ DE USUARIO ---
+    st.title("🤖 AI Inventory Console v4.5")
+    
+    # Barra lateral
     margen = st.sidebar.slider("Margen de beneficio (%)", 0, 50, 15)
-    if st.sidebar.button("🔄 Forzar Recarga"):
+    if st.sidebar.button("🔄 Forzar Recarga de Datos"):
         st.cache_data.clear()
         st.rerun()
+
+    # Buscador principal
+    entrada = st.text_input("🔍 Pega tus PN separados por |", placeholder="Ej: PN1 | PN2 | PN3").upper()
 
     if entrada:
         pns_buscados = [x.strip() for x in entrada.split('|') if x.strip()]
         res_total = db[db['PN'].isin(pns_buscados)]
 
-        # --- VISTA ITSCOPE (Título arriba, Listado debajo con STOCK) ---
-        with c_itscope:
-            st.markdown('<div class="itscope-box">', unsafe_allow_html=True)
-            st.markdown("### 📊 Market Top 5 (ITscope)")
-            top5_data = obtener_top5_itscope(pns_buscados[0])
-            if not top5_data.empty:
-                st.dataframe(top5_data, hide_index=True, use_container_width=True)
-            else:
-                st.caption("No hay datos externos para esta referencia.")
-            st.markdown('</div>', unsafe_allow_html=True)
-
         if not res_total.empty:
+            # Resumen para la tabla
             res_resumen = res_total.sort_values('COSTO').groupby('PN').head(1)[['PN', 'DESC', 'COSTO', 'PROVEEDOR']]
             
+            # Gestión del PN activo
             if "pn_activo" not in st.session_state or st.session_state["pn_activo"] not in pns_buscados:
                 st.session_state["pn_activo"] = pns_buscados[0]
 
-            # --- TARJETAS ---
+            # --- ZONA DE TARJETAS ---
             pn_actual = st.session_state["pn_activo"]
             datos_pn = res_total[res_total['PN'] == pn_actual].sort_values('COSTO')
             
@@ -141,33 +110,64 @@ if check_password():
                 st.caption(f"📝 {datos_pn['DESC'].iloc[0]}")
 
                 costo_min = datos_pn['COSTO'].min()
+                costo_max = datos_pn['COSTO'].max()
+
                 grid = st.columns(4)
                 for idx, (_, r) in enumerate(datos_pn.iterrows()):
                     pvp = r['COSTO'] * (1 + (margen/100))
+                    ahorro = costo_max - r['COSTO']
                     with grid[idx % 4]:
                         st.markdown(f"""
                         <div class="card">
                             <div class="vendor-name">{r['PROVEEDOR']}</div>
                             <div class="price-val">{r['COSTO']:.2f}€</div>
                             <div class="pvp-val">PVP: {pvp:.2f}€</div>
-                            <div style="margin:10px 0;">
+                            <div style="margin: 10px 0;">
                                 {'<span class="savings-tag">⭐ MEJOR PRECIO</span>' if r['COSTO'] == costo_min else f'<span style="color:gray; font-size:12px;">Dif: +{(r["COSTO"]-costo_min):.2f}€</span>'}
                             </div>
                             <p style="font-size:13px; margin:0;">📦 Stock: <b>{r['STOCK']}</b></p>
                         </div>
                         """, unsafe_allow_html=True)
-
-            # --- TABLA NAVEGACIÓN ---
+            
+            # --- TABLA DE NAVEGACIÓN (CON CONTROL DE ERRORES) ---
             st.divider()
-            st.subheader("📋 Panel de Referencias")
-            seleccion = st.dataframe(res_resumen, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row", key="tabla_nav")
+            st.subheader("📋 Panel de Referencias (Selecciona una fila para actualizar tarjetas)")
+            
+            seleccion = st.dataframe(
+                res_resumen,
+                use_container_width=True,
+                hide_index=True,
+                on_select="rerun",
+                selection_mode="single-row",
+                key="tabla_navegacion"
+            )
 
+            # Lógica de cambio de PN segura
             if seleccion and seleccion.selection.rows:
-                idx = seleccion.selection.rows[0]
-                if idx < len(res_resumen):
-                    nuevo_pn = res_resumen.iloc[idx]['PN']
+                fila_idx = seleccion.selection.rows[0]
+                if fila_idx < len(res_resumen):
+                    nuevo_pn = res_resumen.iloc[fila_idx]['PN']
                     if nuevo_pn != st.session_state["pn_activo"]:
                         st.session_state["pn_activo"] = nuevo_pn
                         st.rerun()
+
+            # --- EXPORTACIÓN ---
+            st.sidebar.divider()
+            st.sidebar.subheader("📦 Exportar Resultados")
+            try:
+                df_pivot = res_total.pivot_table(index=['PN', 'DESC'], columns='PROVEEDOR', values=['COSTO', 'STOCK'], aggfunc='first')
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                    df_pivot.to_excel(writer, sheet_name='Comparativa')
+                
+                st.sidebar.download_button(
+                    label="📥 Descargar Excel",
+                    data=output.getvalue(),
+                    file_name="comparativa.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            except:
+                st.sidebar.warning("Error al generar exportación.")
         else:
-            st.warning("No se encontraron resultados.")
+            st.warning("No se encontraron resultados para esas referencias.")
+            
