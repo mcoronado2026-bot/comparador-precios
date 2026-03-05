@@ -40,23 +40,32 @@ if check_password():
         .price-val { font-size: 26px; font-weight: bold; color: #1d1d1b; margin: 5px 0; }
         .pvp-val { color: #ff6000; font-size: 19px; font-weight: bold; }
         .savings-tag { background: #e8f5e9; color: #2e7d32; padding: 4px 8px; border-radius: 5px; font-size: 12px; font-weight: bold; }
-        .itscope-box { background-color: #f8f9fa; padding: 10px; border-radius: 10px; border: 1px solid #eaeaea; }
+        .itscope-box { background-color: #f8f9fa; padding: 15px; border-radius: 10px; border: 1px solid #eaeaea; }
         </style>
         """, unsafe_allow_html=True)
 
-    # --- MOTOR DE DATOS ITSCOPE ---
+    # --- MOTOR DE DATOS ITSCOPE (CON MAPEADO DE STOCK) ---
     def obtener_top5_itscope(pn):
         url_api = "https://api.itscope.com/2.0/t/86MIdkfqPjtK_SDiprcfaKp1l_hWeIgtka9oYRZLH3X95Vje82UP7nh1rcwaLTaUHXj2MELgGTBusiarXbby2Z5BJeJqHS-5ASq9CRl76fYlf9Dhu7K3dY5tZNp_fMZ7-iUmn4JhGS0D7mwHNH7eo7oEyeFA8tbBGyjwyYJxfSc"
         try:
             r = requests.get(url_api, timeout=10)
             df_it = pd.read_csv(io.StringIO(r.content.decode('utf-8')), on_bad_lines='skip')
             df_it.columns = [c.upper().strip() for c in df_it.columns]
-            # Búsqueda flexible de columnas
-            col_pn = 'PN' if 'PN' in df_it.columns else df_it.columns[0]
-            col_precio = 'PRECIO' if 'PRECIO' in df_it.columns else (df_it.columns[1] if len(df_it.columns)>1 else df_it.columns[0])
             
-            res = df_it[df_it[col_pn].astype(str).str.contains(pn, na=False, case=False)]
-            return res.sort_values(by=col_precio).head(5)
+            # Identificación inteligente de columnas
+            col_pn = next((c for c in df_it.columns if 'PN' in c or 'SKU' in c or 'REF' in c), df_it.columns[0])
+            col_precio = next((c for c in df_it.columns if 'PRECIO' in c or 'PRICE' in c or 'COST' in c), df_it.columns[1])
+            col_stock = next((c for c in df_it.columns if 'STOCK' in c or 'AVAIL' in c or 'CANT' in c), None)
+            col_prov = next((c for c in df_it.columns if 'PROV' in c or 'SUPP' in c or 'NAME' in c), df_it.columns[2])
+
+            res = df_it[df_it[col_pn].astype(str).str.contains(pn, na=False, case=False)].copy()
+            
+            # Formatear salida
+            cols_mostrar = [col_prov, col_precio]
+            if col_stock:
+                cols_mostrar.append(col_stock)
+            
+            return res.sort_values(by=col_precio).head(5)[cols_mostrar]
         except:
             return pd.DataFrame()
 
@@ -106,7 +115,7 @@ if check_password():
         pns_buscados = [x.strip() for x in entrada.split('|') if x.strip()]
         res_total = db[db['PN'].isin(pns_buscados)]
 
-        # --- VISTA ITSCOPE (Título arriba, Tabla debajo) ---
+        # --- VISTA ITSCOPE (Título arriba, Listado debajo con STOCK) ---
         with c_itscope:
             st.markdown('<div class="itscope-box">', unsafe_allow_html=True)
             st.markdown("### 📊 Market Top 5 (ITscope)")
@@ -132,7 +141,6 @@ if check_password():
                 st.caption(f"📝 {datos_pn['DESC'].iloc[0]}")
 
                 costo_min = datos_pn['COSTO'].min()
-                costo_max = datos_pn['COSTO'].max()
                 grid = st.columns(4)
                 for idx, (_, r) in enumerate(datos_pn.iterrows()):
                     pvp = r['COSTO'] * (1 + (margen/100))
@@ -149,7 +157,7 @@ if check_password():
                         </div>
                         """, unsafe_allow_html=True)
 
-            # --- TABLA NAVEGACIÓN (FIX INDEX ERROR) ---
+            # --- TABLA NAVEGACIÓN ---
             st.divider()
             st.subheader("📋 Panel de Referencias")
             seleccion = st.dataframe(res_resumen, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row", key="tabla_nav")
