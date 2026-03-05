@@ -4,123 +4,114 @@ import requests
 import io
 from concurrent.futures import ThreadPoolExecutor
 
-# --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="AI Inventory Console v5.1 - Fix", layout="wide")
+# --- CONFIGURACIÓN DE RENDIMIENTO ---
+st.set_page_config(page_title="Price Intel Engine v5.3 - Full Restore", layout="wide")
 
 st.markdown("""
     <style>
-    .card {
-        background: #ffffff; padding: 20px; border-radius: 10px;
-        border-top: 4px solid #ff6000; box-shadow: 0 4px 6px rgba(0,0,0,0.07);
-        margin-bottom: 20px; transition: transform 0.2s;
+    .price-card {
+        background: white; border-radius: 12px; padding: 15px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1); border-top: 4px solid #ff6000;
+        text-align: center; margin-bottom: 15px;
     }
-    .card:hover { transform: translateY(-5px); }
-    .vendor-name { font-size: 11px; color: #888; font-weight: bold; text-transform: uppercase; }
-    .price-val { font-size: 26px; font-weight: bold; color: #1d1d1b; margin: 5px 0; }
-    .pvp-val { color: #ff6000; font-size: 19px; font-weight: bold; }
-    .stock-label { font-size: 12px; color: #444; }
+    .vendor-name { font-size: 0.8rem; font-weight: bold; color: #888; text-transform: uppercase; }
+    .price-val { font-size: 1.8rem; font-weight: 700; color: #111; }
+    .pvp-val { font-size: 1.1rem; font-weight: 600; color: #ff6000; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- SEGURIDAD ---
-def check_password():
-    if "password_correct" not in st.session_state:
-        st.title("🔐 Price Intel - Acceso")
-        pwd = st.text_input("Introduce la clave de seguridad", type="password")
-        if st.button("Acceder"):
-            if pwd == st.secrets["password"]:
-                st.session_state["password_correct"] = True
-                st.rerun()
-            else:
-                st.error("Clave incorrecta")
-        return False
-    return True
+# --- MOTOR DE DATOS (TODOS LOS PROVEEDORES) ---
+@st.cache_data(ttl=3600, show_spinner="Actualizando base de datos global...")
+def cargar_inventario_completo():
+    # Configuración maestra de cada mayorista (URLs y columnas)
+    # Formato cols: [Índice_PN, Índice_Precio, Índice_Stock, Índice_Descripción]
+    PROVEEDORES = {
+        "DEPAU": {"url": "https://www.depau.es/webservices/tarifa_completa/84acda65-a18c-4dc7-87d8-afc8f54616ba/csv", "sep": "\t", "cols": [9, 2, 8, 3], "enc": "utf-8"},
+        "INFORTISA": {"url": "https://apiv2.infortisa.com/api/Tarifa/GetFileV5?user=4057C87D-91D1-42C9-A95F-D1FF8E30720E", "sep": ";", "cols": [0, 10, 11, 1], "enc": "latin-1"},
+        "GLOBOMATIK": {"url": "https://multimedia.globomatik.net/csv/import.php?username=31843&password=04665238&formato=csv&filter=PRESTAIMPORT&type=prestashop2&mode=all", "sep": ";", "cols": [1, 13, 12, 2], "enc": "utf-8"},
+        "DESYMAN": {"url": "https://desyman.com/module/ma_desyman/download_rate_customer?token=68c40ea1aa4df9db6e2614a6b79bcb48&format=CSVreducido", "sep": ";", "cols": [2, 7, 3, 1], "enc": "utf-8"},
+        "SYK": {"url": "https://www.syk.es/tarifas/completa.csv", "sep": ";", "cols": [0, 4, 5, 1], "enc": "utf-8"}, # URL estimada
+        "JARLTECH": {"url": "https://www.jarltech.com/p_get_pricelist.php?user=TU_USER&pass=TU_PASS", "sep": ",", "cols": [0, 5, 8, 1], "enc": "utf-8"},
+        "KOSATEK": {"url": "https://api.kosatek.de/v1/products/csv?apiKey=TU_KEY", "sep": ";", "cols": [1, 10, 15, 2], "enc": "utf-8"}
+    }
 
-if check_password():
-    # --- MOTOR DE DATOS ---
-    @st.cache_data(ttl=3600, show_spinner="Sincronizando con Mayoristas...")
-    def cargar_datos_completos():
-        PROVEEDORES = {
-            "DEPAU": {"url": "https://www.depau.es/webservices/tarifa_completa/84acda65-a18c-4dc7-87d8-afc8f54616ba/csv", "sep": "\t", "cols": [9, 2, 8, 3], "enc": "utf-8"},
-            "INFORTISA": {"url": "https://apiv2.infortisa.com/api/Tarifa/GetFileV5?user=4057C87D-91D1-42C9-A95F-D1FF8E30720E", "sep": ";", "cols": [0, 10, 11, 1], "enc": "latin-1"},
-            "GLOBOMATIK": {"url": "https://multimedia.globomatik.net/csv/import.php?username=31843&password=04665238&formato=csv&filter=PRESTAIMPORT&type=prestashop2&mode=all", "sep": ";", "cols": [1, 13, 12, 2], "enc": "utf-8"},
-            "DESYMAN": {"url": "https://desyman.com/module/ma_desyman/download_rate_customer?token=68c40ea1aa4df9db6e2614a6b79bcb48&format=CSVreducido", "sep": ";", "cols": [2, 7, 3, 1], "enc": "utf-8"},
-            "SYK": {"url": "URL_AQUI", "sep": ";", "cols": [0, 1, 2, 3], "enc": "utf-8"},
-            "JARLTECH": {"url": "URL_AQUI", "sep": ";", "cols": [0, 1, 2, 3], "enc": "utf-8"},
-            "KOSATEK": {"url": "URL_AQUI", "sep": ";", "cols": [0, 1, 2, 3], "enc": "utf-8"}
-        }
+    def fetch(nombre, cfg):
+        try:
+            # Si es una URL de prueba o vacía, saltamos
+            if "TU_" in cfg["url"] or "URL_AQUI" in cfg["url"]: return pd.DataFrame()
+            
+            r = requests.get(cfg["url"], timeout=12)
+            df = pd.read_csv(io.StringIO(r.content.decode(cfg["enc"], errors='ignore')), 
+                             sep=cfg["sep"], engine='c', on_bad_lines='skip', low_memory=False)
+            
+            res = pd.DataFrame()
+            res['PN'] = df.iloc[:, cfg["cols"][0]].astype(str).str.upper().str.strip()
+            # Limpieza agresiva de precios (quitar €, comas, espacios)
+            res['COSTO'] = pd.to_numeric(df.iloc[:, cfg["cols"][1]].astype(str).str.replace(',', '.').str.extract('(\d+\.?\d*)')[0], errors='coerce')
+            res['STOCK'] = df.iloc[:, cfg["cols"][2]].astype(str)
+            res['DESC'] = df.iloc[:, cfg["cols"][3]].astype(str)
+            res['PROVEEDOR'] = nombre
+            return res.dropna(subset=['COSTO'])
+        except Exception as e:
+            return pd.DataFrame()
 
-        def descargar(nombre, info):
-            try:
-                if "URL_AQUI" in info["url"]: return pd.DataFrame()
-                r = requests.get(info["url"], timeout=10)
-                df = pd.read_csv(io.StringIO(r.content.decode(info["enc"], errors='replace')), 
-                                 sep=info["sep"], on_bad_lines='skip', engine='c')
-                t = pd.DataFrame()
-                t['PN'] = df.iloc[:, info["cols"][0]].astype(str).str.upper().str.strip()
-                t['COSTO'] = pd.to_numeric(df.iloc[:, info["cols"][1]].astype(str).str.replace(',', '.').str.extract('(\d+\.?\d*)')[0], errors='coerce')
-                t['STOCK'] = df.iloc[:, info["cols"][2]].astype(str)
-                t['DESC'] = df.iloc[:, info["cols"][3]].astype(str)
-                t['PROVEEDOR'] = nombre
-                return t.dropna(subset=['COSTO'])
-            except: return pd.DataFrame()
-
-        with ThreadPoolExecutor(max_workers=7) as pool:
-            results = list(pool.map(lambda p: descargar(*p), PROVEEDORES.items()))
-        return pd.concat(results, ignore_index=True)
-
-    db = cargar_datos_completos()
-
-    # --- UI PRINCIPAL ---
-    st.title("🤖 AI Inventory Console v5.1")
+    # Ejecución en paralelo real para no perder tiempo
+    with ThreadPoolExecutor(max_workers=7) as executor:
+        results = list(executor.map(lambda p: fetch(*p), PROVEEDORES.items()))
     
-    entrada = st.text_input("🔍 Part Number(s)", key="main_search").upper()
+    return pd.concat(results, ignore_index=True)
 
-    if entrada:
-        pns = [x.strip() for x in entrada.split('|') if x.strip()]
-        res_total = db[db['PN'].isin(pns)]
-
-        if not res_total.empty:
-            if "pn_activo" not in st.session_state or st.session_state["pn_activo"] not in pns:
-                st.session_state["pn_activo"] = pns[0]
-            
-            pn_sel = st.session_state["pn_activo"]
-            datos_actuales = res_total[res_total['PN'] == pn_sel].sort_values('COSTO')
-
-            # --- SOLUCIÓN AL ERROR: Slider fuera de la sidebar si usamos fragmentos ---
-            st.subheader(f"🏷️ Referencia: {pn_sel}")
-            st.caption(f"📝 {datos_actuales['DESC'].iloc[0] if not datos_actuales.empty else ''}")
-            
-            # Slider de margen (Global para que no rompa el fragmento)
-            margen = st.slider("Margen de beneficio (%)", 0, 50, 15)
-
-            @st.fragment
-            def render_cards(df, m):
-                grid = st.columns(4)
-                for i, (_, r) in enumerate(df.iterrows()):
-                    pvp = r['COSTO'] * (1 + (m/100))
-                    with grid[i % 4]:
-                        st.markdown(f'''
-                        <div class="card">
-                            <div class="vendor-name">{r['PROVEEDOR']}</div>
-                            <div class="price-val">{r['COSTO']:.2f}€</div>
-                            <div class="pvp-val">PVP: {pvp:.2f}€</div>
-                            <div class="stock-label">📦 Stock: <b>{r['STOCK']}</b></div>
-                        </div>
-                        ''', unsafe_allow_html=True)
-
-            render_cards(datos_actuales, margen)
-
-            # TABLA NAVEGABLE
-            st.divider()
-            res_resumen = res_total.sort_values('COSTO').groupby('PN').head(1)[['PN', 'DESC', 'COSTO', 'PROVEEDOR']]
-            sel = st.dataframe(res_resumen, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row")
-
-            if sel and sel.selection.rows:
-                st.session_state["pn_activo"] = res_resumen.iloc[sel.selection.rows[0]]['PN']
-                st.rerun()
-
-    if st.sidebar.button("🔄 Refrescar Todo"):
-        st.cache_data.clear()
+# --- INTERFAZ ---
+if "password_correct" not in st.session_state:
+    st.title("🔐 Acceso Price Intel")
+    if st.text_input("Contraseña", type="password") == st.secrets["password"]:
+        st.session_state["password_correct"] = True
         st.rerun()
+    st.stop()
+
+db = cargar_inventario_completo()
+
+st.title("🚀 Inventory Engine v5.3 (Full Multi-Vendor)")
+
+search = st.text_input("🔍 Pega tus PN (ej: PN1 | PN2)").upper()
+
+if search:
+    pns = [p.strip() for p in search.split("|") if p.strip()]
+    res = db[db['PN'].isin(pns)]
+
+    if not res.empty:
+        if "active_pn" not in st.session_state or st.session_state.active_pn not in pns:
+            st.session_state.active_pn = pns[0]
+
+        # SECCIÓN DE TARJETAS
+        pn_actual = st.session_state.active_pn
+        data_pn = res[res['PN'] == pn_actual].sort_values('COSTO')
         
+        st.subheader(f"📦 Referencia: {pn_actual}")
+        st.caption(data_pn['DESC'].iloc[0] if not data_pn.empty else "")
+
+        margen = st.sidebar.slider("Margen de beneficio (%)", 0, 50, 15)
+
+        cols = st.columns(4)
+        for i, (_, row) in enumerate(data_pn.iterrows()):
+            pvp = row['COSTO'] * (1 + (margen/100))
+            with cols[i % 4]:
+                st.markdown(f"""
+                    <div class="price-card">
+                        <div class="vendor-name">{row['PROVEEDOR']}</div>
+                        <div class="price-big" style="font-size:1.8rem; font-weight:bold;">{row['COSTO']:.2f}€</div>
+                        <div class="pvp-orange">PVP: {pvp:.2f}€</div>
+                        <div style="font-size:0.8rem; margin-top:5px;">Stock: <b>{row['STOCK']}</b></div>
+                    </div>
+                """, unsafe_allow_html=True)
+
+        # TABLA DE NAVEGACIÓN
+        st.divider()
+        res_resumen = res.sort_values('COSTO').groupby('PN').head(1)[['PN', 'DESC', 'COSTO', 'PROVEEDOR']]
+        sel = st.dataframe(res_resumen, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row")
+
+        if sel and sel.selection.rows:
+            st.session_state.active_pn = res_resumen.iloc[sel.selection.rows[0]]['PN']
+            st.rerun()
+    else:
+        st.warning("No se encontraron coincidencias. Revisa si las URLs de SYK/KOSATEK/JARLTECH son correctas.")
