@@ -28,9 +28,9 @@ def check_password():
 
 if check_password():
     # --- CONFIGURACIÓN DE PÁGINA ---
-    st.set_page_config(page_title="Price Intel Pro v4.5", layout="wide")
+    st.set_page_config(page_title="AI Inventory Console v4.5", layout="wide")
     
-    # CSS para diseño profesional y tarjetas responsive
+    # CSS para diseño profesional, tarjetas y el nuevo recuadro de ITscope
     st.markdown("""
         <style>
         .card {
@@ -43,13 +43,37 @@ if check_password():
         .price-val { font-size: 26px; font-weight: bold; color: #1d1d1b; margin: 5px 0; }
         .pvp-val { color: #ff6000; font-size: 19px; font-weight: bold; }
         .savings-tag { background: #e8f5e9; color: #2e7d32; padding: 4px 8px; border-radius: 5px; font-size: 12px; font-weight: bold; }
+        .itscope-box {
+            background-color: #f8f9fa; padding: 15px; border-radius: 10px;
+            border: 1px solid #eaeaea; box-shadow: inset 0 2px 4px rgba(0,0,0,0.02);
+        }
         </style>
         """, unsafe_allow_html=True)
 
-    # --- MOTOR DE DATOS (CON PARALELISMO Y CACHÉ) ---
+    # --- FUNCIÓN ESPECÍFICA ITSCOPE ---
+    def obtener_top5_itscope(pn):
+        url_api = "https://api.itscope.com/2.0/t/86MIdkfqPjtK_SDiprcfaKp1l_hWeIgtka9oYRZLH3X95Vje82UP7nh1rcwaLTaUHXj2MELgGTBusiarXbby2Z5BJeJqHS-5ASq9CRl76fYlf9Dhu7K3dY5tZNp_fMZ7-iUmn4JhGS0D7mwHNH7eo7oEyeFA8tbBGyjwyYJxfSc"
+        try:
+            # Petición a la API de ITscope
+            r = requests.get(url_api, timeout=10)
+            df_it = pd.read_csv(io.StringIO(r.content.decode('utf-8')), sep=',', on_bad_lines='skip')
+            
+            # Limpieza de columnas para asegurar compatibilidad
+            df_it.columns = [c.upper().strip() for c in df_it.columns]
+            
+            # Buscamos por la columna de referencia (ajustar si ITscope usa otro nombre de columna)
+            # Suponemos que el CSV tiene 'PN' o 'MANUFACTURER_SKU'
+            col_ref = 'PN' if 'PN' in df_it.columns else df_it.columns[0]
+            col_precio = 'PRECIO' if 'PRECIO' in df_it.columns else df_it.columns[1]
+            
+            top5 = df_it[df_it[col_ref].astype(str).str.contains(pn, na=False)].sort_values(by=col_precio).head(5)
+            return top5
+        except:
+            return None
+
+    # --- MOTOR DE DATOS ORIGINAL ---
     @st.cache_data(ttl=3600)
     def cargar_datos_seguro():
-        # Diccionario con URLs corregidas en una sola línea para evitar SyntaxError
         PROVEEDORES = {
             "DEPAU": {"url": "https://www.depau.es/webservices/tarifa_completa/84acda65-a18c-4dc7-87d8-afc8f54616ba/csv", "sep": "\t", "cols": [9, 2, 8, 3], "enc": "utf-8"},
             "INFORTISA": {"url": "https://apiv2.infortisa.com/api/Tarifa/GetFileV5?user=4057C87D-91D1-42C9-A95F-D1FF8E30720E", "sep": ";", "cols": [0, 10, 11, 1], "enc": "latin-1"},
@@ -79,111 +103,47 @@ if check_password():
     db = cargar_datos_seguro()
 
     # --- INTERFAZ DE USUARIO ---
-    st.title("🧡 Console Price v4.5")
-    
+    col_head, col_itscope = st.columns([2, 1])
+
+    with col_head:
+        st.title("🤖 AI Inventory Console v4.5") # Cambio de icono y título
+        entrada = st.text_input("🔍 Pega tus PN separados por |", placeholder="Ej: PN1 | PN2 | PN3").upper()
+
     # Barra lateral
     margen = st.sidebar.slider("Margen de beneficio (%)", 0, 50, 15)
     if st.sidebar.button("🔄 Forzar Recarga de Datos"):
         st.cache_data.clear()
         st.rerun()
 
-    # Buscador principal
-    entrada = st.text_input("🔍 Pega tus PN separados por |", placeholder="Ej: PN1 | PN2 | PN3").upper()
-
     if entrada:
         pns_buscados = [x.strip() for x in entrada.split('|') if x.strip()]
         res_total = db[db['PN'].isin(pns_buscados)]
 
+        # --- RECUADRO ITSCOPE (TOP 5) ---
+        with col_itscope:
+            st.markdown('<div class="itscope-box">', unsafe_allow_html=True)
+            st.subheader("📊 Market Top 5 (ITscope)")
+            # Usamos el primer PN de la lista para la consulta rápida
+            pn_para_itscope = pns_buscados[0]
+            top5_it = obtener_top5_itscope(pn_para_itscope)
+            if top5_it is not None and not top5_it.empty:
+                st.dataframe(top5_it, hide_index=True)
+            else:
+                st.caption("No hay datos externos para esta referencia.")
+            st.markdown('</div>', unsafe_allow_html=True)
+
         if not res_total.empty:
-            # Resumen para la tabla (Recuadro Verde)
             res_resumen = res_total.sort_values('COSTO').groupby('PN').head(1)[['PN', 'DESC', 'COSTO', 'PROVEEDOR']]
             
-            # Gestión del PN activo mediante Session State
             if "pn_activo" not in st.session_state or st.session_state["pn_activo"] not in pns_buscados:
                 st.session_state["pn_activo"] = pns_buscados[0]
 
-            # --- ZONA DE TARJETAS (VENTAS) ---
+            # --- ZONA DE TARJETAS ---
             pn_actual = st.session_state["pn_activo"]
             datos_pn = res_total[res_total['PN'] == pn_actual].sort_values('COSTO')
             
             if not datos_pn.empty:
-                desc_label = datos_pn['DESC'].iloc[0]
-                st.subheader(f"🎯 Ofertas para: {pn_actual}")
-                st.caption(f"📝 {desc_label}")
-
-                costo_min = datos_pn['COSTO'].min()
-                costo_max = datos_pn['COSTO'].max()
-
-                # Grid Responsive de 4 columnas
-                grid = st.columns(4)
-                for idx, (_, r) in enumerate(datos_pn.iterrows()):
-                    pvp = r['COSTO'] * (1 + (margen/100))
-                    ahorro = costo_max - r['COSTO']
-                    with grid[idx % 4]:
-                        st.markdown(f"""
-                        <div class="card">
-                            <div class="vendor-name">{r['PROVEEDOR']}</div>
-                            <div class="price-val">{r['COSTO']:.2f}€</div>
-                            <div class="pvp-val">PVP: {pvp:.2f}€</div>
-                            <div style="margin: 10px 0;">
-                                {'<span class="savings-tag">⭐ MEJOR PRECIO</span>' if r['COSTO'] == costo_min else f'<span style="color:gray; font-size:12px;">Dif: +{ahorro:.2f}€</span>'}
-                            </div>
-                            <p style="font-size:13px; margin:0;">📦 Stock: <b>{r['STOCK']}</b></p>
-                        </div>
-                        """, unsafe_allow_html=True)
-            
-            # --- TABLA DE NAVEGACIÓN (RECUADRO VERDE) ---
-            st.divider()
-            st.subheader("📋 Panel de Referencias (Selecciona una fila para actualizar tarjetas)")
-            
-            seleccion = st.dataframe(
-                res_resumen,
-                use_container_width=True,
-                hide_index=True,
-                on_select="rerun",
-                selection_mode="single-row",
-                key="tabla_navegacion"
-            )
-
-            # Lógica para cambiar de producto al hacer clic en la tabla
-            if seleccion and seleccion.selection.rows:
-                fila_idx = seleccion.selection.rows[0]
-                nuevo_pn = res_resumen.iloc[fila_idx]['PN']
-                if nuevo_pn != st.session_state["pn_activo"]:
-                    st.session_state["pn_activo"] = nuevo_pn
-                    st.rerun()
-
-            # --- SECCIÓN DE EXPORTACIÓN ---
-            st.sidebar.divider()
-            st.sidebar.subheader("📦 Exportar Resultados")
-            
-            # Preparar datos pivotados (cada proveedor en una columna)
-            try:
-                df_pivot = res_total.pivot_table(index=['PN', 'DESC'], columns='PROVEEDOR', values=['COSTO', 'STOCK'], aggfunc='first')
-                
-                # Botón Excel
-                output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    df_pivot.to_excel(writer, sheet_name='Comparativa')
-                
-                st.sidebar.download_button(
-                    label="📥 Descargar Excel Completo",
-                    data=output.getvalue(),
-                    file_name="comparativa_precios.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-                
-                # Botón XML
-                xml_data = res_total.to_xml(index=False)
-                st.sidebar.download_button(
-                    label="📄 Descargar XML",
-                    data=xml_data,
-                    file_name="datos_proveedores.xml",
-                    mime="application/xml"
-                )
-            except:
-                st.sidebar.warning("No se pudo generar la exportación con los datos actuales.")
-        else:
-            st.warning("No se encontraron resultados para esas referencias.")
+                desc_label = datos_
    
+
 
