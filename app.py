@@ -2,105 +2,154 @@ import streamlit as st
 import pandas as pd
 import requests
 import io
+import re
 from concurrent.futures import ThreadPoolExecutor
 
-# --- CONFIGURACIÓN DE PANTALLA ---
-st.set_page_config(page_title="Price Intel Master v7.2", layout="wide")
+# --- 1. CAPA DE CONFIGURACIÓN Y UI (PRESENTACIÓN) ---
+st.set_page_config(page_title="Price Intel Console v8.0", layout="wide")
 
-# CSS para que el precio se vea profesional: Grande y con el € destacado
 st.markdown("""
     <style>
-    .price-card {
-        background: #fff; border-radius: 12px; padding: 20px;
-        border-top: 5px solid #ff6000; box-shadow: 0 4px 10px rgba(0,0,0,0.1);
-        text-align: center; margin-bottom: 20px;
-    }
-    .vendor { font-size: 0.8rem; color: #888; font-weight: bold; text-transform: uppercase; }
-    .price-tag { font-size: 2.2rem; font-weight: 800; color: #111; margin: 5px 0; }
-    .euro { color: #ff6000; font-size: 1.4rem; margin-left: 2px; }
-    .pvp-tag { font-size: 1.1rem; color: #ff6000; font-weight: 600; border-top: 1px solid #eee; padding-top: 10px; }
-    .stock-tag { font-size: 0.85rem; background: #f0f2f6; padding: 3px 10px; border-radius: 15px; margin-top: 10px; display: inline-block; }
+    .main-card { background: #fff; border-radius: 12px; padding: 20px; border-top: 5px solid #ff6000; box-shadow: 0 4px 10px rgba(0,0,0,0.1); text-align: center; }
+    .price-big { font-size: 2.2rem; font-weight: 800; color: #111; margin: 5px 0; }
+    .euro-symbol { color: #ff6000; font-size: 1.2rem; }
+    .stock-badge { font-size: 0.8rem; background: #f0f2f6; padding: 4px 12px; border-radius: 20px; color: #333; }
     </style>
 """, unsafe_allow_html=True)
 
+# --- 2. CAPA DE LÓGICA DE DETECCIÓN Y NORMALIZACIÓN (CORE) ---
+class DataEngine:
+    """Clase encargada de la detección dinámica y validación de tipos."""
+    
+    COL_MAPPING = {
+        'pn': ['partnumber', 'referencia', 'codigo', 'mpn', 'pn', 'referencia_fabricante'],
+        'costo': ['price', 'precio', 'costo', 'wholesale', 'neto', 'unit_price'],
+        'stock': ['stock', 'cantidad', 'qty', 'disponible', 'unidades'],
+        'desc': ['nombre', 'descripcion', 'description', 'producto', 'name']
+    }
+
+    @staticmethod
+    def identify_column(df_columns, target_key):
+        """Busca la columna más probable basándose en palabras clave."""
+        for name in DataEngine.COL_MAPPING[target_key]:
+            match = [c for c in df_columns if name.lower() in str(c).lower()]
+            if match: return match[0]
+        return None
+
+    @staticmethod
+    def sanitize_price(value):
+        """Validador Anti-Alucinación: Evita EANs en campos de precio."""
+        if pd.isna(value): return 0.0
+        # Limpieza básica de strings
+        str_val = str(value).replace(',', '.').strip()
+        # Extraer solo el patrón numérico (decimal)
+        match = re.search(r'(\d+\.?\d*)', str_val)
+        if not match: return 0.0
+        
+        num = float(match.group(1))
+        # EXCEPCIÓN DE MAPEO: Si el número tiene formato de EAN (ej: > 10^10)
+        # o es sospechosamente largo (> 10 dígitos), es un error de columna.
+        if num > 9999999: # Límite lógico de precio para hardware
+            return None 
+        return num
+
 @st.cache_data(ttl=3600)
-def cargar_inventario_inteligente():
-    # Diccionario de mayoristas
-    MAYORISTAS = {
-        "DEPAU": {"url": "https://www.depau.es/webservices/tarifa_completa/84acda65-a18c-4dc7-87d8-afc8f54616ba/csv", "sep": "\t"},
+def fetch_and_process_all():
+    """Carga asíncrona de proveedores con ThreadPoolExecutor."""
+    PROVIDERS = {
         "INFORTISA": {"url": "https://apiv2.infortisa.com/api/Tarifa/GetFileV5?user=4057C87D-91D1-42C9-A95F-D1FF8E30720E", "sep": ";"},
         "GLOBOMATIK": {"url": "https://multimedia.globomatik.net/csv/import.php?username=31843&password=04665238&formato=csv&filter=PRESTAIMPORT&type=prestashop2&mode=all", "sep": ";"},
+        "DEPAU": {"url": "https://www.depau.es/webservices/tarifa_completa/84acda65-a18c-4dc7-87d8-afc8f54616ba/csv", "sep": "\t"},
         "DESYMAN": {"url": "https://desyman.com/module/ma_desyman/download_rate_customer?token=68c40ea1aa4df9db6e2614a6b79bcb48&format=CSVreducido", "sep": ";"}
     }
 
-    def worker(nombre, info):
+    def process_single(name, config):
         try:
-            r = requests.get(info["url"], timeout=15)
-            df = pd.read_csv(io.BytesIO(r.content), sep=info["sep"], encoding='latin-1', on_bad_lines='skip')
+            r = requests.get(config["url"], timeout=20)
+            df = pd.read_csv(io.BytesIO(r.content), sep=config["sep"], encoding='latin-1', on_bad_lines='skip')
             
-            # --- EL "CEREBRO" DEL CÓDIGO: DETECCIÓN DINÁMICA ---
-            # Buscamos columnas por nombre, no por posición (así no se rompe si cambian el orden)
-            def find_col(possible_names):
-                for name in possible_names:
-                    match = [c for c in df.columns if name.lower() in c.lower()]
-                    if match: return match[0]
-                return None
+            # Detección dinámica de columnas
+            c_pn = DataEngine.identify_column(df.columns, 'pn')
+            c_costo = DataEngine.identify_column(df.columns, 'costo')
+            c_stock = DataEngine.identify_column(df.columns, 'stock')
+            c_desc = DataEngine.identify_column(df.columns, 'desc')
 
-            c_pn = find_col(['partnumber', 'referencia', 'codigo', 'mpn', 'pn'])
-            c_price = find_col(['price', 'precio', 'costo', 'wholesale', 'neto'])
-            c_stock = find_col(['stock', 'cantidad', 'qty', 'disponible'])
-            c_desc = find_col(['nombre', 'descripcion', 'description', 'producto'])
+            if not c_pn or not c_costo: return pd.DataFrame()
 
-            if not c_price or not c_pn: return pd.DataFrame()
+            # Normalización vectorizada
+            temp_df = pd.DataFrame()
+            temp_df['PN'] = df[c_pn].astype(str).str.upper().str.strip()
+            temp_df['COSTO'] = df[c_costo].apply(DataEngine.sanitize_price)
+            temp_df['STOCK'] = pd.to_numeric(df[c_stock].astype(str).str.extract('(\d+)')[0], errors='coerce').fillna(0).astype(int)
+            temp_df['DESC'] = df[c_desc].astype(str).str.slice(0, 100) if c_desc else "N/A"
+            temp_df['PROVEEDOR'] = name
+            
+            # Eliminar registros con "Excepción de Mapeo" (Precios=None)
+            return temp_df.dropna(subset=['COSTO'])
+        except Exception as e:
+            return pd.DataFrame()
 
-            # Limpieza y formateo
-            res = pd.DataFrame()
-            res['PN'] = df[c_pn].astype(str).str.upper().str.strip()
-            # Limpieza de precio: extrae solo el número real para evitar EANs
-            res['COSTO'] = pd.to_numeric(df[c_price].astype(str).str.replace(',', '.').str.extract('(\d+\.?\d*)')[0], errors='coerce')
-            res['STOCK'] = pd.to_numeric(df[c_stock].astype(str).str.extract('(\d+)')[0], errors='coerce').fillna(0).astype(int)
-            res['DESC'] = df[c_desc].astype(str).str.slice(0, 80) if c_desc else "Sin descripción"
-            res['PROVEEDOR'] = nombre
-
-            # Filtro de seguridad Senior: descartar precios imposibles (EANs colados)
-            return res[(res['COSTO'] > 0.1) & (res['COSTO'] < 25000)]
-        except: return pd.DataFrame()
-
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        results = list(executor.map(lambda x: worker(*x), MAYORISTAS.items()))
-    return pd.concat(results, ignore_index=True)
-
-# --- FLUJO PRINCIPAL ---
-if "password_correct" not in st.session_state:
-    # (Aquí iría tu bloque de login)
-    st.session_state["password_correct"] = True # Simulando acceso para el ejemplo
-
-db = cargar_inventario_inteligente()
-
-st.title("🛡️ Price Intel Master v7.2")
-margen = st.sidebar.slider("Margen de beneficio (%)", 0, 100, 15)
-search = st.text_input("🔍 Introduce PNs (separa con | )").strip().upper()
-
-if search:
-    pns = [p.strip() for p in search.split('|') if p.strip()]
-    res = db[db['PN'].isin(pns)]
+    with ThreadPoolExecutor(max_workers=len(PROVIDERS)) as executor:
+        results = list(executor.map(lambda p: process_single(*p), PROVIDERS.items()))
     
-    if not res.empty:
-        # Mostrar tarjetas del primer PN encontrado o seleccionado
-        pn_act = pns[0] 
-        data_pn = res[res['PN'] == pn_act].sort_values('COSTO')
+    full_db = pd.concat(results, ignore_index=True)
+    # Optimización: Indexar por PN para búsquedas instantáneas (O(1) vs O(n))
+    return full_db
+
+# --- 3. FLUJO DE APLICACIÓN (UI SEPARADA) ---
+db = fetch_and_process_all()
+
+st.title("🚀 Console Price Intelligence v8.0")
+st.sidebar.header("Configuración")
+margen = st.sidebar.slider("Margen de beneficio (%)", 0, 100, 15)
+
+# Buscador multilínea con pipes |
+search_raw = st.text_input("🔍 Pega tus PN separados por |", placeholder="PN1 | PN2 | PN3").strip().upper()
+
+if search_raw:
+    # Hash-Set para búsqueda eficiente
+    target_pns = {p.strip() for p in search_raw.split('|') if p.strip()}
+    
+    # Filtrado ultra-rápido mediante vectorización
+    filtered_res = db[db['PN'].isin(target_pns)]
+
+    if not filtered_res.empty:
+        # Lógica de selección de referencia activa
+        if "selected_pn" not in st.session_state or st.session_state.selected_pn not in target_pns:
+            st.session_state.selected_pn = list(target_pns)[0]
         
-        st.subheader(f"Ofertas para: {pn_act}")
+        pn_sel = st.session_state.selected_pn
+        cards_data = filtered_res[filtered_res['PN'] == pn_sel].sort_values('COSTO')
+
+        st.subheader(f"🎯 Ofertas para: {pn_sel}")
         
-        cols = st.columns(4)
-        for i, (_, row) in enumerate(data_pn.iterrows()):
+        # Grid de Cards (Comparativa)
+        grid = st.columns(4)
+        for i, (_, row) in enumerate(cards_data.iterrows()):
             pvp = row['COSTO'] * (1 + (margen/100))
-            with cols[i % 4]:
+            with grid[i % 4]:
                 st.markdown(f"""
-                    <div class="price-card">
-                        <div class="vendor">{row['PROVEEDOR']}</div>
-                        <div class="price-tag">{row['COSTO']:,.2f}<span class="euro">€</span></div>
-                        <div class="pvp-tag">PVP Sug: {pvp:,.2f}€</div>
-                        <div class="stock-tag">📦 Stock: {row['STOCK']} uds.</div>
+                    <div class="main-card">
+                        <div style="color:#888; font-weight:bold; font-size:0.7rem;">{row['PROVEEDOR']}</div>
+                        <div class="price-big">{row['COSTO']:,.2f}<span class="euro-symbol">€</span></div>
+                        <div style="color:#ff6000; font-weight:600; border-top:1px solid #eee; margin-top:10px; padding-top:5px;">
+                            PVP Sug: {pvp:,.2f}€
+                        </div>
+                        <div class="stock-badge">📦 Stock: {row['STOCK']} uds</div>
                     </div>
                 """, unsafe_allow_html=True)
+
+        # Tabla de Referencias (Resumen)
+        st.divider()
+        st.subheader("📋 Panel de Referencias")
+        resumen = filtered_res.sort_values('COSTO').groupby('PN').head(1)[['PN', 'DESC', 'COSTO', 'PROVEEDOR']]
+        
+        # Evento de selección en tabla
+        event = st.dataframe(resumen, use_container_width=True, hide_index=True, 
+                             on_select="rerun", selection_mode="single-row")
+        
+        if event and event.selection.rows:
+            st.session_state.selected_pn = resumen.iloc[event.selection.rows[0]]['PN']
+            st.rerun()
+    else:
+        st.warning("No se han encontrado coincidencias en los proveedores actuales.")
